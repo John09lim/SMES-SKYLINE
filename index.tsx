@@ -1,6 +1,6 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createClient } from '@supabase/supabase-js';
 import { 
   BookOpen, 
   PenTool, 
@@ -32,12 +32,23 @@ import {
   Camera,
   GraduationCap,
   PlayCircle,
-  ExternalLink
+  ExternalLink,
+  Mail
 } from 'lucide-react';
 
+// --- Supabase Configuration ---
+// TO ENABLE SUPABASE: Enter your project URL and Anon Key below.
+// If left blank, the app will use the local mock backend automatically.
+const SUPABASE_URL = ""; 
+const SUPABASE_ANON_KEY = "";
+
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) 
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
+  : null;
+
 // --- Assets ---
-// REPLACE THIS URL WITH YOUR UPLOADED LOGO URL
-const LOGO_URL = "https://placehold.co/400x400/15803d/FFF?text=SMES+Logo"; 
+// Updated to match the SMES Skyline Logo design (Beige/Green/Red)
+const LOGO_URL = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 500'%3E%3Ccircle cx='250' cy='250' r='245' fill='%23F5F5DC' stroke='%2315803d' stroke-width='10'/%3E%3Ccircle cx='250' cy='250' r='220' fill='none' stroke='%23b91c1c' stroke-width='5'/%3E%3Ctext x='250' y='200' font-family='serif' font-size='140' font-weight='bold' text-anchor='middle' fill='%2315803d'%3ESMES%3C/text%3E%3Ctext x='250' y='300' font-family='cursive' font-size='90' font-weight='bold' text-anchor='middle' fill='%23b91c1c'%3ESkyline%3C/text%3E%3Ctext x='250' y='380' font-family='sans-serif' font-size='30' font-weight='bold' text-anchor='middle' fill='%2315803d' letter-spacing='2'%3EEST. 1945%3C/text%3E%3C/svg%3E";
 
 // --- Types ---
 
@@ -538,59 +549,148 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: User) => void }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [verificationSent, setVerificationSent] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccess('');
+    setIsLoading(true);
 
-    if (isRegistering) {
-      // REGISTER
-      if (!fullName || !email || !password) {
-        setError("All fields are required.");
-        return;
-      }
-      
-      const users = Backend.getUsers();
-      if (users.find(u => u.email === email)) {
-        setError("Email is already registered.");
-        return;
-      }
-
-      const newUser: User = {
-        id: `user_${Date.now()}`,
-        name: fullName,
-        email,
-        password, // In a real app, hash this!
-        role,
-        schoolId: 'skyline_high'
-      };
-
-      Backend.saveUser(newUser);
-      setSuccess("Account created successfully! Logging you in...");
-      setTimeout(() => onLogin(newUser), 1000);
-
-    } else {
-      // LOGIN
-      const users = Backend.getUsers();
-      const user = users.find(u => u.email === email && u.password === password);
-      
-      if (user) {
-        onLogin(user);
-      } else {
-        // Fallback for demo purposes if list is empty, allow hardcoded test user or show error
-        // But for this request, we strictly want "create an account".
-        if (users.length === 0 && email === 'teacher@demo.com' && password === 'admin') {
-           // Backdoor for demo teacher if no users exist yet
-           const admin: User = { id: 'admin', name: 'Admin Teacher', email, role: 'teacher', schoolId: 's1' };
-           Backend.saveUser(admin);
-           onLogin(admin);
-           return;
+    try {
+      if (isRegistering) {
+        // REGISTER
+        if (!fullName || !email || !password) {
+          throw new Error("All fields are required.");
         }
-        setError("Invalid email or password. Please try again or create an account.");
+        
+        if (supabase) {
+           // Supabase Registration
+           const { data, error: signUpError } = await supabase.auth.signUp({
+             email,
+             password,
+             options: {
+               data: { full_name: fullName, role: role },
+               emailRedirectTo: window.location.origin
+             }
+           });
+           
+           if (signUpError) throw signUpError;
+           
+           if (data.user && !data.session) {
+             setVerificationSent(true);
+             setIsLoading(false);
+             return;
+           }
+
+           if (data.user) {
+             const newUser: User = {
+               id: data.user.id,
+               name: fullName,
+               email: data.user.email || email,
+               role: role,
+               schoolId: 'skyline_high'
+             };
+             // Optional: You could still sync to local backend if needed
+             // Backend.saveUser(newUser); 
+             
+             setSuccess("Account created! Check email for confirmation or log in if confirmation is disabled.");
+             // Automatically log them in if Supabase returns a session immediately (depends on config)
+             if (data.session) {
+                setTimeout(() => onLogin(newUser), 1000);
+             } else {
+                setIsLoading(false);
+             }
+           }
+        } else {
+          // Fallback Local Mock Registration
+          const users = Backend.getUsers();
+          if (users.find(u => u.email === email)) {
+            throw new Error("Email is already registered.");
+          }
+
+          const newUser: User = {
+            id: `user_${Date.now()}`,
+            name: fullName,
+            email,
+            password, // In a real app, hash this!
+            role,
+            schoolId: 'skyline_high'
+          };
+
+          Backend.saveUser(newUser);
+          setSuccess("Account created successfully! Logging you in...");
+          setTimeout(() => onLogin(newUser), 1000);
+        }
+
+      } else {
+        // LOGIN
+        if (supabase) {
+           const { data, error: signInError } = await supabase.auth.signInWithPassword({
+             email,
+             password
+           });
+           
+           if (signInError) throw signInError;
+           
+           if (data.user) {
+             const loggedInUser: User = {
+               id: data.user.id,
+               name: data.user.user_metadata.full_name || email.split('@')[0],
+               email: data.user.email || email,
+               role: data.user.user_metadata.role || 'student',
+               schoolId: 'skyline_high'
+             };
+             onLogin(loggedInUser);
+           }
+        } else {
+          // Fallback Local Mock Login
+          const users = Backend.getUsers();
+          const user = users.find(u => u.email === email && u.password === password);
+          
+          if (user) {
+            onLogin(user);
+          } else {
+            // Backdoor for demo teacher if no users exist yet and keys are empty
+            if (users.length === 0 && email === 'teacher@demo.com' && password === 'admin') {
+               const admin: User = { id: 'admin', name: 'Admin Teacher', email, role: 'teacher', schoolId: 's1' };
+               Backend.saveUser(admin);
+               onLogin(admin);
+               return;
+            }
+            throw new Error("Invalid email or password. Please try again or create an account.");
+          }
+        }
       }
+    } catch (err: any) {
+      setError(err.message || "An unexpected error occurred.");
+      setIsLoading(false);
     }
   };
+
+  if (verificationSent) {
+    return (
+        <div className="min-h-screen bg-emerald-950 flex items-center justify-center p-4">
+          <div className="bg-stone-50 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-300 border-4 border-emerald-900 p-8 text-center">
+               <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Mail className="w-10 h-10 text-emerald-700" />
+               </div>
+               <h2 className="text-2xl font-bold text-stone-800 font-serif mb-4">Check Your Email</h2>
+               <p className="text-stone-600 mb-6">
+                 We've sent a verification link to <span className="font-bold text-stone-800">{email}</span>. 
+                 Please click the link to verify your account and log in.
+               </p>
+               <button 
+                 onClick={() => setVerificationSent(false)}
+                 className="text-emerald-700 font-bold hover:underline"
+               >
+                 Back to Login
+               </button>
+          </div>
+        </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-emerald-950 flex items-center justify-center p-4">
@@ -645,8 +745,10 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: User) => void }) => {
                 <label className="block text-sm font-bold text-stone-700 mb-1">Full Name</label>
                 <input 
                   type="text" 
+                  name="fullName"
+                  autoComplete="name"
                   required
-                  className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white"
+                  className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white text-stone-900"
                   placeholder="Juan Dela Cruz"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
@@ -658,8 +760,10 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: User) => void }) => {
               <label className="block text-sm font-bold text-stone-700 mb-1">Email Address</label>
               <input 
                 type="email" 
+                name="email"
+                autoComplete="email"
                 required
-                className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white"
+                className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white text-stone-900"
                 placeholder={role === 'student' ? 'juan@student.edu' : 'teacher@school.edu'}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -670,8 +774,10 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: User) => void }) => {
               <label className="block text-sm font-bold text-stone-700 mb-1">Password</label>
               <input 
                 type="password" 
+                name="password"
+                autoComplete={isRegistering ? "new-password" : "current-password"}
                 required
-                className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white"
+                className="w-full px-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all bg-white text-stone-900"
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -680,12 +786,19 @@ const AuthScreen = ({ onLogin }: { onLogin: (user: User) => void }) => {
 
             <button 
               type="submit"
-              className={`w-full font-bold py-3 rounded-lg transition-colors shadow-lg flex items-center justify-center gap-2 text-white
+              disabled={isLoading}
+              className={`w-full font-bold py-3 rounded-lg transition-colors shadow-lg flex items-center justify-center gap-2 text-white disabled:opacity-50 disabled:cursor-not-allowed
                 ${role === 'student' ? 'bg-red-700 hover:bg-red-800 shadow-red-700/30' : 'bg-emerald-700 hover:bg-emerald-800 shadow-emerald-700/30'}
               `}
             >
-              {isRegistering ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
-              {isRegistering ? 'Register' : 'Login'}
+              {isLoading ? (
+                <span className="w-5 h-5 border-2 border-white/50 border-t-white rounded-full animate-spin"></span>
+              ) : (
+                <>
+                  {isRegistering ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
+                  {isRegistering ? 'Register' : 'Login'}
+                </>
+              )}
             </button>
           </form>
 
@@ -1086,355 +1199,243 @@ const WritingWorkspace = ({
 };
 
 // 3. Student Dashboard
-const StudentDashboard = ({ user, onSelectPrompt }: { user: User; onSelectPrompt: (p: Prompt) => void }) => {
-  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
-  const [lang, setLang] = useState<Language>('english');
-  const [showTutorials, setShowTutorials] = useState(false);
+const StudentDashboard = ({ user, onSelectPrompt }: { user: User; onSelectPrompt: (prompt: Prompt) => void }) => {
+  const [category, setCategory] = useState<Category>('news');
+  const [language, setLanguage] = useState<Language>('english');
+  const [showTutorial, setShowTutorial] = useState(false);
 
-  const handleTopicClick = (topicObj: TrendTopic) => {
-    if (!selectedCategory) return;
-    
-    const title = topicObj.title[lang];
-    const facts = topicObj.facts[lang];
-    
-    // Create specific prompt from topic
-    const newPrompt: Prompt = {
-      id: `trend_${Date.now()}`,
-      title: title,
-      category: selectedCategory,
-      language: lang,
-      facts: facts,
-      instructions: lang === 'english'
-        ? `Write a ${selectedCategory} article about "${title}". Use the provided facts in the sidebar to build your story.`
-        : `Sumulat ng artikulong ${selectedCategory === 'news' ? 'Pambalita' : selectedCategory === 'feature' ? 'Lathalain' : 'Editoryal'} tungkol sa "${title}". Gamitin ang mga datos sa gilid para mabuo ang kwento.`,
+  const trends = TRENDS[category];
+
+  const handleSelect = (trend: TrendTopic) => {
+    const prompt: Prompt = {
+      id: `p_${Date.now()}`,
+      title: language === 'english' ? trend.title.en : trend.title.tl,
+      category,
+      language,
+      facts: language === 'english' ? trend.facts.en : trend.facts.tl,
+      instructions: language === 'english' 
+        ? `Write a ${category} article based on the facts provided.`
+        : `Sumulat ng ${category === 'news' ? 'balita' : category === 'feature' ? 'lathalain' : 'editoryal'} gamit ang mga datos na ibinigay.`,
       isPractice: true
     };
-    onSelectPrompt(newPrompt);
+    onSelectPrompt(prompt);
   };
 
   return (
-    <div className="min-h-screen bg-stone-100 relative">
-      {/* Tutorial Modal */}
-      {showTutorials && <TutorialSection onClose={() => setShowTutorials(false)} />}
-
-      <nav className="bg-emerald-900 border-b border-emerald-800 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-md">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setSelectedCategory(null)}>
-          <div className="w-10 h-10 rounded-full bg-stone-100 border-2 border-emerald-700 overflow-hidden">
-             <img src={LOGO_URL} alt="SMES Logo" className="w-full h-full object-cover" />
+    <div className="min-h-screen bg-stone-100">
+      {showTutorial && <TutorialSection onClose={() => setShowTutorial(false)} />}
+      
+      <header className="bg-emerald-900 text-white sticky top-0 z-30 shadow-lg">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+             <div className="bg-white p-1.5 rounded-full">
+               <img src={LOGO_URL} alt="Logo" className="w-8 h-8 rounded-full" />
+             </div>
+             <div>
+               <h1 className="font-bold text-lg leading-tight font-serif">The Skyline</h1>
+               <p className="text-emerald-300 text-xs uppercase tracking-wider">Student Newsroom</p>
+             </div>
           </div>
-          <span className="font-bold text-xl text-stone-50 tracking-tight font-serif">SMES Skyline</span>
+          <div className="flex items-center gap-4">
+             <div className="text-right hidden sm:block">
+               <p className="font-bold text-sm">{user.name}</p>
+               <p className="text-emerald-300 text-xs">Student Journalist</p>
+             </div>
+             <button 
+               onClick={() => setShowTutorial(true)}
+               className="bg-emerald-800 hover:bg-emerald-700 p-2 rounded-lg transition-colors text-emerald-100"
+               title="Open Tutorials"
+             >
+               <GraduationCap className="w-6 h-6" />
+             </button>
+          </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="text-right hidden sm:block">
-            <p className="text-sm font-bold text-stone-100">{user.name}</p>
-            <p className="text-xs text-emerald-300 capitalize font-medium">{user.role}</p>
-          </div>
-          <div className="w-10 h-10 bg-red-700 rounded-full flex items-center justify-center text-stone-50 font-bold border-2 border-red-500 shadow-sm">
-            {user.name[0].toUpperCase()}
-          </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+        {/* Controls */}
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6 bg-white p-6 rounded-xl shadow-sm border border-stone-200">
+           <div>
+             <h2 className="text-2xl font-bold text-stone-800 font-serif mb-1">Assignment Board</h2>
+             <p className="text-stone-500 text-sm">Select a topic to start writing your article.</p>
+           </div>
+           
+           <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex bg-stone-100 p-1 rounded-lg">
+                {(['english', 'filipino'] as const).map((l) => (
+                  <button
+                    key={l}
+                    onClick={() => setLanguage(l)}
+                    className={`px-4 py-2 rounded-md text-sm font-bold capitalize transition-all ${
+                      language === l ? 'bg-white shadow text-emerald-900' : 'text-stone-500 hover:text-stone-700'
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex bg-stone-100 p-1 rounded-lg">
+                {(['news', 'feature', 'editorial'] as const).map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setCategory(c)}
+                    className={`px-4 py-2 rounded-md text-sm font-bold capitalize transition-all ${
+                      category === c ? 'bg-white shadow text-emerald-900' : 'text-stone-500 hover:text-stone-700'
+                    }`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+           </div>
         </div>
-      </nav>
 
-      <main className="max-w-6xl mx-auto p-6 space-y-8">
-        {!selectedCategory ? (
-          /* VIEW 1: CATEGORY SELECTION */
-          <>
-             <div className="bg-gradient-to-r from-red-800 to-red-900 rounded-2xl p-8 text-white shadow-xl flex flex-col sm:flex-row items-center justify-between gap-6 border border-red-700">
-              <div>
-                <h1 className="text-3xl font-bold mb-2 font-serif">
-                  {lang === 'english' ? 'Select a Category' : 'Pumili ng Kategorya'}
-                </h1>
-                <p className="text-red-100 max-w-lg">
-                   {lang === 'english' ? 'Choose a writing discipline to explore current trends and issues.' : 'Pumili ng disiplina sa pagsulat upang tuklasin ang mga napapanahong isyu.'}
-                </p>
-              </div>
-              <div className="flex bg-black/20 p-1 rounded-lg backdrop-blur-md">
-                 <button 
-                  onClick={() => setLang('english')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${lang === 'english' ? 'bg-stone-50 text-red-900 shadow' : 'text-red-200 hover:text-white'}`}
-                 >
-                   English
-                 </button>
-                 <button 
-                  onClick={() => setLang('filipino')}
-                  className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${lang === 'filipino' ? 'bg-stone-50 text-red-900 shadow' : 'text-red-200 hover:text-white'}`}
-                 >
-                   Filipino
-                 </button>
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-6">
-              <button 
-                onClick={() => setSelectedCategory('news')}
-                className="bg-white p-8 rounded-2xl border border-stone-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group text-left h-64 flex flex-col justify-between relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 p-32 bg-sky-50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110"></div>
-                <div className="relative z-10">
-                  <div className="bg-sky-100 w-14 h-14 rounded-xl flex items-center justify-center mb-6 text-sky-700 group-hover:bg-sky-700 group-hover:text-white transition-colors">
-                    <Newspaper className="w-7 h-7" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-stone-800 mb-2 font-serif">
-                    {lang === 'english' ? 'News Writing' : 'Pagsulat ng Balita'}
-                  </h3>
-                  <p className="text-stone-500 font-medium">
-                    {lang === 'english' ? 'Reporting facts, events, and issues with accuracy and speed.' : 'Pag-uulat ng mga katotohanan at pangyayari nang may kawastuhan.'}
-                  </p>
-                </div>
-                <div className="relative z-10 flex items-center text-sky-700 font-bold text-sm mt-4">
-                  {lang === 'english' ? 'Explore 10 Trends' : 'Tingnan ang 10 Paksa'} <ChevronRight className="w-4 h-4 ml-1" />
-                </div>
-              </button>
-
-              <button 
-                onClick={() => setSelectedCategory('feature')}
-                className="bg-white p-8 rounded-2xl border border-stone-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group text-left h-64 flex flex-col justify-between relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 p-32 bg-emerald-50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110"></div>
-                <div className="relative z-10">
-                  <div className="bg-emerald-100 w-14 h-14 rounded-xl flex items-center justify-center mb-6 text-emerald-700 group-hover:bg-emerald-700 group-hover:text-white transition-colors">
-                    <Feather className="w-7 h-7" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-stone-800 mb-2 font-serif">
-                     {lang === 'english' ? 'Feature Writing' : 'Lathalain'}
-                  </h3>
-                  <p className="text-stone-500 font-medium">
-                     {lang === 'english' ? 'Human interest stories that appeal to emotion and creativity.' : 'Mga kwentong pumupukaw sa damdamin at imahinasyon.'}
-                  </p>
-                </div>
-                 <div className="relative z-10 flex items-center text-emerald-700 font-bold text-sm mt-4">
-                  {lang === 'english' ? 'Explore 10 Trends' : 'Tingnan ang 10 Paksa'} <ChevronRight className="w-4 h-4 ml-1" />
-                </div>
-              </button>
-
-              <button 
-                onClick={() => setSelectedCategory('editorial')}
-                className="bg-white p-8 rounded-2xl border border-stone-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group text-left h-64 flex flex-col justify-between relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 p-32 bg-red-50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110"></div>
-                <div className="relative z-10">
-                  <div className="bg-red-100 w-14 h-14 rounded-xl flex items-center justify-center mb-6 text-red-700 group-hover:bg-red-700 group-hover:text-white transition-colors">
-                    <Megaphone className="w-7 h-7" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-stone-800 mb-2 font-serif">
-                     {lang === 'english' ? 'Editorial Writing' : 'Editoryal'}
-                  </h3>
-                  <p className="text-stone-500 font-medium">
-                     {lang === 'english' ? 'Persuasive pieces that state a stand on current issues.' : 'Mga akdang naglalahad ng paninindigan sa mga isyu.'}
-                  </p>
-                </div>
-                 <div className="relative z-10 flex items-center text-red-700 font-bold text-sm mt-4">
-                   {lang === 'english' ? 'Explore 10 Trends' : 'Tingnan ang 10 Paksa'} <ChevronRight className="w-4 h-4 ml-1" />
-                </div>
-              </button>
-            </div>
-            
-            {/* New Training Section */}
-            <div className="mt-8 border-t border-stone-300 pt-8 animate-in fade-in slide-in-from-bottom-4 duration-500 delay-100">
-               <div className="bg-emerald-900 rounded-2xl p-8 text-white relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
-                 <div className="relative z-10">
-                    <div className="inline-flex items-center gap-2 bg-emerald-800 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-2 text-emerald-100">
-                       <Award className="w-4 h-4" /> Training & Tutorials
-                    </div>
-                    <h2 className="text-3xl font-bold font-serif mb-2">Journalism Training Camp</h2>
-                    <p className="text-emerald-100 max-w-xl">
-                      Master the basics of News, Feature, and Editorial writing with our comprehensive guides and curated video tutorials.
-                    </p>
-                 </div>
-                 <div className="relative z-10">
-                    <button 
-                      onClick={() => setShowTutorials(true)}
-                      className="bg-red-700 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-lg shadow-lg shadow-red-900/50 transition-all transform hover:scale-105 flex items-center gap-2"
-                    >
-                      <GraduationCap className="w-5 h-5" />
-                      Start Learning
-                    </button>
-                 </div>
-                 {/* Decorative background element */}
-                 <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -mr-16 -mt-16 blur-3xl"></div>
-               </div>
-            </div>
-          </>
-        ) : (
-          /* VIEW 2: TOPIC SELECTION */
-          <div className="animate-in slide-in-from-right-4 fade-in duration-300">
-            <button 
-              onClick={() => setSelectedCategory(null)}
-              className="flex items-center gap-2 text-stone-500 hover:text-red-700 font-medium mb-6 transition-colors"
+        {/* Trend Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {trends.map((trend, idx) => (
+            <div 
+              key={idx} 
+              className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-xl transition-all border border-stone-200 group flex flex-col h-full"
             >
-              <ArrowLeft className="w-4 h-4" />
-              {lang === 'english' ? 'Back to Categories' : 'Bumalik sa mga Kategorya'}
-            </button>
-
-            <div className="flex items-center gap-4 mb-8">
-               <div className={`p-3 rounded-xl ${
-                 selectedCategory === 'news' ? 'bg-sky-100 text-sky-700' :
-                 selectedCategory === 'feature' ? 'bg-emerald-100 text-emerald-700' :
-                 'bg-red-100 text-red-700'
-               }`}>
-                 {selectedCategory === 'news' && <Newspaper className="w-8 h-8" />}
-                 {selectedCategory === 'feature' && <Feather className="w-8 h-8" />}
-                 {selectedCategory === 'editorial' && <Megaphone className="w-8 h-8" />}
-               </div>
-               <div>
-                 <h2 className="text-3xl font-bold text-stone-800 capitalize font-serif">
-                   {selectedCategory === 'news' 
-                      ? (lang === 'english' ? 'News Trends' : 'Mga Balitang Pambansa')
-                      : selectedCategory === 'feature' 
-                        ? (lang === 'english' ? 'Feature Trends' : 'Mga Paksa sa Lathalain')
-                        : (lang === 'english' ? 'Editorial Trends' : 'Mga Isyung Editoryal')
-                   }
-                 </h2>
-                 <p className="text-stone-500">
-                   {lang === 'english' ? 'Select a topic to start writing.' : 'Pumili ng paksa upang magsimula.'}
-                 </p>
-               </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              {TRENDS[selectedCategory].map((topicObj, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleTopicClick(topicObj)}
-                  className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm hover:border-red-400 hover:shadow-md transition-all text-left flex items-start gap-4 group"
-                >
-                  <span className="flex-shrink-0 w-8 h-8 bg-stone-100 rounded-full flex items-center justify-center text-stone-400 font-bold text-sm group-hover:bg-red-700 group-hover:text-white transition-colors">
-                    {index + 1}
+              <div className={`h-2 w-full ${
+                category === 'news' ? 'bg-sky-600' : 
+                category === 'editorial' ? 'bg-red-600' : 
+                'bg-emerald-600'
+              }`} />
+              
+              <div className="p-6 flex-1 flex flex-col">
+                <div className="flex items-start justify-between mb-4">
+                  <span className={`px-2 py-1 text-[10px] font-bold uppercase tracking-wider rounded ${
+                    category === 'news' ? 'bg-sky-50 text-sky-700' : 
+                    category === 'editorial' ? 'bg-red-50 text-red-700' : 
+                    'bg-emerald-50 text-emerald-700'
+                  }`}>
+                    {category}
                   </span>
-                  <div>
-                    <h4 className="font-bold text-stone-800 text-lg group-hover:text-red-700 transition-colors mb-1">
-                      {topicObj.title[lang]}
-                    </h4>
-                    <div className="flex items-center gap-3 mt-2">
-                       <span className="text-xs font-medium text-stone-400 uppercase tracking-wider flex items-center gap-1">
-                         <Globe className="w-3 h-3" /> {lang === 'english' ? 'International/Local' : 'Lokal/Internasyonal'}
-                       </span>
-                       <span className="text-xs font-medium text-stone-400 uppercase tracking-wider flex items-center gap-1">
-                         <Zap className="w-3 h-3" /> {lang === 'english' ? 'Trending' : 'Uso Ngayon'}
-                       </span>
-                    </div>
-                  </div>
+                  {idx < 2 && (
+                    <span className="flex items-center gap-1 text-red-600 text-[10px] font-bold uppercase tracking-wider animate-pulse">
+                      <TrendingUp className="w-3 h-3" /> Trending
+                    </span>
+                  )}
+                </div>
+
+                <h3 className="text-lg font-bold text-stone-800 mb-3 font-serif leading-tight group-hover:text-red-800 transition-colors">
+                  {language === 'english' ? trend.title.en : trend.title.tl}
+                </h3>
+                
+                <p className="text-stone-500 text-sm mb-6 line-clamp-3 flex-1">
+                  {(language === 'english' ? trend.facts.en : trend.facts.tl)[0]}
+                </p>
+
+                <button 
+                  onClick={() => handleSelect(trend)}
+                  className="w-full py-3 border-2 border-stone-100 hover:border-emerald-600 hover:bg-emerald-600 hover:text-white rounded-lg font-bold text-stone-600 transition-all flex items-center justify-center gap-2 group-hover:shadow-lg"
+                >
+                  <PenTool className="w-4 h-4" />
+                  {language === 'english' ? 'Start Writing' : 'Magsimula'}
                 </button>
-              ))}
+              </div>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
       </main>
     </div>
   );
 };
 
-// 4. Teacher Dashboard (Simplified)
+// 4. Teacher Dashboard
 const TeacherDashboard = ({ user }: { user: User }) => {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
 
   useEffect(() => {
-    // Load submissions from simulated backend
-    const allSubmissions = Backend.getSubmissions();
-    // In a real app we'd filter by schoolId or classId. 
-    // Here we just show all since it's a demo.
-    setSubmissions(allSubmissions);
+    // Load submissions
+    setSubmissions(Backend.getSubmissions());
   }, []);
-
-  const stats = useMemo(() => {
-    return {
-      total: submissions.length,
-      pending: submissions.filter(s => s.status === 'submitted').length,
-      graded: submissions.filter(s => s.status === 'graded').length,
-    }
-  }, [submissions]);
 
   return (
     <div className="min-h-screen bg-stone-100">
-      <nav className="bg-emerald-900 border-b border-emerald-800 px-6 py-4 flex items-center justify-between text-stone-50 shadow-md">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-stone-100 border-2 border-emerald-700 overflow-hidden">
-             <img src={LOGO_URL} alt="SMES Logo" className="w-full h-full object-cover" />
-          </div>
-          <span className="font-bold text-xl tracking-tight font-serif">Skyline <span className="text-emerald-300 font-sans text-sm font-normal uppercase tracking-wider">Educator</span></span>
+      <header className="bg-stone-900 text-white shadow-lg sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+           <div className="flex items-center gap-3">
+             <div className="bg-emerald-600 p-2 rounded-lg">
+               <FileText className="w-5 h-5 text-white" />
+             </div>
+             <div>
+               <h1 className="font-bold text-xl font-serif">Editorial Desk</h1>
+               <p className="text-stone-400 text-xs uppercase tracking-wider">Faculty Administration</p>
+             </div>
+           </div>
+           <div className="text-right">
+             <p className="font-bold text-sm">{user.name}</p>
+             <p className="text-emerald-400 text-xs">Adviser / Editor</p>
+           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <button className="text-sm text-emerald-100 hover:text-white font-medium">Class Roster</button>
-          <button className="text-sm text-emerald-100 hover:text-white font-medium">Assignments</button>
-          <div className="w-8 h-8 bg-emerald-700 rounded-full flex items-center justify-center text-xs font-bold border border-emerald-500">
-            {user.name.substring(0,2).toUpperCase()}
-          </div>
-        </div>
-      </nav>
-      <main className="max-w-6xl mx-auto p-8">
-        <div className="flex justify-between items-end mb-8">
-          <div>
-             <h1 className="text-2xl font-bold text-stone-800 font-serif">Teacher Dashboard</h1>
-             <p className="text-stone-500">Welcome back, {user.name}</p>
-          </div>
-        </div>
+      </header>
 
-        <div className="grid md:grid-cols-3 gap-6 mb-8">
-           <div className="bg-white p-6 rounded-xl border border-stone-200 shadow-sm">
-             <p className="text-sm text-stone-500 font-medium uppercase tracking-wider mb-1">Total Submissions</p>
-             <p className="text-3xl font-bold text-stone-800">{stats.total}</p>
-           </div>
-           <div className="bg-white p-6 rounded-xl border border-stone-200 shadow-sm">
-             <p className="text-sm text-stone-500 font-medium uppercase tracking-wider mb-1">Needs Grading</p>
-             <p className="text-3xl font-bold text-red-600">{stats.pending}</p>
-           </div>
-           <div className="bg-white p-6 rounded-xl border border-stone-200 shadow-sm">
-             <p className="text-sm text-stone-500 font-medium uppercase tracking-wider mb-1">Graded</p>
-             <p className="text-3xl font-bold text-emerald-600">{stats.graded}</p>
-           </div>
-        </div>
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
+          <div className="p-6 border-b border-stone-200 flex items-center justify-between bg-stone-50">
+            <h2 className="text-lg font-bold text-stone-800 flex items-center gap-2">
+              <BookOpen className="w-5 h-5" />
+              Student Submissions
+            </h2>
+            <span className="bg-stone-200 text-stone-700 px-3 py-1 rounded-full text-xs font-bold">
+              {submissions.length} Items
+            </span>
+          </div>
 
-        <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center">
-             <h3 className="font-bold text-stone-700">Recent Submissions</h3>
-             <button onClick={() => setSubmissions(Backend.getSubmissions())} className="text-sm text-emerald-700 font-medium hover:underline">Refresh List</button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-stone-50 text-xs text-stone-500 uppercase font-semibold">
-                <tr>
-                  <th className="px-6 py-3 text-left">Student</th>
-                  <th className="px-6 py-3 text-left">Topic / Title</th>
-                  <th className="px-6 py-3 text-left">Date</th>
-                  <th className="px-6 py-3 text-left">Category</th>
-                  <th className="px-6 py-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-100">
-                {submissions.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-stone-500 italic">
-                      No submissions found yet. Wait for students to submit work.
-                    </td>
-                  </tr>
-                ) : (
-                  submissions.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-stone-50 transition-colors">
-                      <td className="px-6 py-4 text-sm font-bold text-stone-800">{sub.studentName}</td>
-                      <td className="px-6 py-4 text-sm text-stone-600 max-w-xs truncate">{sub.promptTitle}</td>
-                      <td className="px-6 py-4 text-sm text-stone-500">{new Date(sub.date).toLocaleDateString()}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded-full text-xs font-semibold uppercase tracking-wide
-                          ${sub.category === 'news' ? 'bg-sky-100 text-sky-700' : 
-                            sub.category === 'feature' ? 'bg-emerald-100 text-emerald-700' : 
-                            'bg-red-100 text-red-700'}`}>
-                          {sub.category}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button 
-                          onClick={() => alert(`Content Preview:\n\n${sub.content.substring(0, 200)}...`)}
-                          className="text-emerald-700 text-sm font-medium hover:underline"
-                        >
-                          View Content
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          {submissions.length === 0 ? (
+            <div className="p-12 text-center flex flex-col items-center justify-center text-stone-400">
+               <div className="w-16 h-16 bg-stone-100 rounded-full flex items-center justify-center mb-4">
+                 <FileText className="w-8 h-8 opacity-50" />
+               </div>
+               <p>No submissions found yet.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-stone-100">
+              {submissions.map((sub) => (
+                <div key={sub.id} className="p-6 hover:bg-stone-50 transition-colors group">
+                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${
+                            sub.category === 'news' ? 'bg-sky-100 text-sky-700' :
+                            sub.category === 'editorial' ? 'bg-red-100 text-red-700' :
+                            'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {sub.category}
+                          </span>
+                          <span className="text-xs text-stone-400">•</span>
+                          <span className="text-xs text-stone-500 font-medium">
+                            {new Date(sub.date).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-stone-800 text-lg font-serif group-hover:text-red-800 transition-colors">
+                          {sub.promptTitle}
+                        </h3>
+                        <p className="text-sm text-stone-500">
+                          by <span className="font-bold text-stone-700">{sub.studentName}</span> ({sub.studentId})
+                        </p>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                         <button className="px-3 py-1.5 border border-stone-300 rounded text-sm font-bold text-stone-600 hover:bg-white hover:border-stone-400 transition-all shadow-sm">
+                           View
+                         </button>
+                         <button className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-bold hover:bg-emerald-700 transition-all shadow-sm">
+                           Grade
+                         </button>
+                      </div>
+                   </div>
+                   <div className="bg-stone-100/50 p-4 rounded-lg border border-stone-200">
+                     <p className="text-stone-600 font-serif text-sm line-clamp-3 italic">
+                       "{sub.content}"
+                     </p>
+                   </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
     </div>
@@ -1447,11 +1448,50 @@ const App = () => {
   const [user, setUser] = useState<User | null>(null);
   const [activePrompt, setActivePrompt] = useState<Prompt | null>(null);
 
-  // Check for session
+  // Check for session (Local + Supabase if available)
   useEffect(() => {
+    // Check local storage first (covers both mock and persisted Supabase session potentially)
     const savedUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
     if (savedUser) {
       setUser(JSON.parse(savedUser));
+    }
+    
+    // Optional: If Supabase is active, check real session
+    if (supabase) {
+      // 1. Check initial session
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session && session.user) {
+          const u: User = {
+             id: session.user.id,
+             name: session.user.user_metadata.full_name || session.user.email?.split('@')[0] || 'User',
+             email: session.user.email || '',
+             role: session.user.user_metadata.role || 'student',
+             schoolId: 'skyline_high'
+          };
+          setUser(u);
+          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(u));
+        }
+      });
+
+      // 2. Listen for auth changes (redirects, magic links, sign outs)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+         if (session && session.user) {
+            const u: User = {
+               id: session.user.id,
+               name: session.user.user_metadata.full_name || session.user.email?.split('@')[0] || 'User',
+               email: session.user.email || '',
+               role: session.user.user_metadata.role || 'student',
+               schoolId: 'skyline_high'
+            };
+            setUser(u);
+            localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(u));
+         } else if (_event === 'SIGNED_OUT') {
+            setUser(null);
+            localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+         }
+      });
+
+      return () => subscription.unsubscribe();
     }
   }, []);
 
@@ -1460,7 +1500,10 @@ const App = () => {
     localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(u));
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
     setUser(null);
     setActivePrompt(null);
     localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
